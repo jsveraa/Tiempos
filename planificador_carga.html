@@ -7,6 +7,9 @@
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@400;500;600;700&family=IBM+Plex+Mono:wght@400;500;600;700&display=swap" rel="stylesheet">
+<script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/html2canvas/1.4.1/html2canvas.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js"></script>
 <script type="module">
 /* ================================================================
    FIREBASE — pega aquí la configuración de TU proyecto
@@ -227,6 +230,28 @@ select.sel:focus, input.field:focus{border-color:var(--accent)}
 .alert-row .meta{color:var(--ink-muted);margin-left:auto;font-family:var(--mono);font-size:11px;white-space:nowrap}
 .no-alerts{color:var(--ink-muted);font-size:12.5px;padding:6px 0}
 
+/* ============ VIEW TABS ============ */
+.viewtabs{display:flex;gap:4px;background:var(--surface-2);border:1px solid var(--border);border-radius:8px;padding:3px;margin-bottom:14px;width:fit-content}
+.viewtab{border:none;background:transparent;color:var(--ink-muted);font-family:var(--sans);font-size:12.5px;font-weight:500;padding:7px 14px;border-radius:6px;cursor:pointer;transition:all .12s}
+.viewtab.active{background:var(--surface);color:var(--accent-strong);box-shadow:var(--shadow)}
+.viewtab:hover:not(.active){color:var(--ink)}
+
+/* ============ EXPORT MENU ============ */
+.export-wrap{position:relative}
+.export-menu{
+  display:none;position:absolute;right:0;top:calc(100% + 6px);z-index:60;
+  background:var(--surface);border:1px solid var(--border);border-radius:10px;
+  box-shadow:0 12px 32px rgba(0,0,0,.18);padding:6px;min-width:220px;
+}
+.export-menu.open{display:block}
+.export-menu button{
+  display:flex;align-items:center;gap:9px;width:100%;text-align:left;border:none;background:transparent;
+  color:var(--ink);padding:9px 10px;border-radius:6px;font-size:12.5px;cursor:pointer;font-family:var(--sans);
+}
+.export-menu button:hover{background:var(--surface-2)}
+.export-menu .ic{width:16px;text-align:center;flex-shrink:0;opacity:.8}
+.export-menu .sep{height:1px;background:var(--border);margin:5px 2px}
+
 /* ============ GRID ============ */
 .gridwrap{
   background:var(--surface);border:1px solid var(--border);border-radius:var(--r);
@@ -398,7 +423,16 @@ input[type=file]{display:none}
     </div>
     <div style="display:flex;gap:8px;align-items:center">
       <span class="sync-badge" id="sync-badge"><span class="dot"></span><span id="sync-label">—</span></span>
-      <button class="btn ghost" id="btn-export" title="Descargar los datos actuales en un archivo .json">⭳ Exportar</button>
+      <div class="export-wrap">
+        <button class="btn ghost" id="btn-export" title="Exportar: Excel, imagen, PDF o respaldo JSON">⭳ Exportar</button>
+        <div class="export-menu" id="export-menu">
+          <button id="exp-excel"><span class="ic">▦</span> Excel (.xlsx)</button>
+          <button id="exp-image"><span class="ic">▧</span> Imagen de la ventana (.png)</button>
+          <button id="exp-pdf"><span class="ic">▤</span> PDF de la ventana (.pdf)</button>
+          <div class="sep"></div>
+          <button id="exp-json"><span class="ic">⎘</span> Respaldo de datos (.json)</button>
+        </div>
+      </div>
       <button class="btn ghost" id="btn-import" title="Cargar datos desde un archivo .json">⭱ Importar</button>
       <input type="file" id="file-import" accept=".json">
     </div>
@@ -440,7 +474,12 @@ input[type=file]{display:none}
     </div>
   </div>
 
-  <div class="gridwrap">
+  <div class="viewtabs" id="viewtabs">
+    <button class="viewtab active" id="tab-view-person" data-view="person">Por persona</button>
+    <button class="viewtab" id="tab-view-project" data-view="project">Por proyecto</button>
+  </div>
+
+  <div class="gridwrap" id="gridwrap">
     <div class="gridscroll">
       <table class="plan" id="plan-table">
         <thead><tr id="thead-row"></tr></thead>
@@ -527,7 +566,9 @@ function weekNumber(d){
 const SWATCHES = ['#3a6f74','#7a5fa8','#c07a3a','#3f8f5f','#4d6fb0','#b0567f','#5b8fa8','#9a7b3f'];
 const STORAGE_KEY = 'planificador_carga_v1';
 let state = null;
-let openPersons = new Set(); // ids expandidos
+let openPersons = new Set(); // ids expandidos (vista por persona)
+let openProjects = new Set(); // ids expandidos (vista por proyecto)
+let viewMode = 'person'; // 'person' | 'project'
 let dragCtx = null;
 
 function uid(prefix){ return prefix + Math.random().toString(36).slice(2,9); }
@@ -680,6 +721,16 @@ function personTotalAll(personId){
 function projectOf(id){ return state.projects.find(p=>p.id===id); }
 function personOf(id){ return state.people.find(p=>p.id===id); }
 
+function assignmentsForProject(projectId){
+  return state.assignments.filter(a => a.projectId === projectId);
+}
+function projectTotalForWeek(projectId, weekDate){
+  return assignmentsForProject(projectId).reduce((s,a)=> s + getHours(a, weekDate), 0);
+}
+function projectTotalAll(projectId){
+  return visibleWeeks().reduce((s,w)=> s + projectTotalForWeek(projectId, w), 0);
+}
+
 function loadClass(pct){
   if(pct === 0) return {cls:'under', fg:'var(--ink-faint)', bg:'transparent'};
   if(pct <= 85) return {cls:'ok', fg:'var(--ok)', bg:'var(--ok-soft)'};
@@ -745,13 +796,19 @@ function escapeHtml(s){
 function renderHead(){
   const weeks = visibleWeeks();
   const thead = document.getElementById('thead-row');
+  const firstLabel = viewMode === 'project' ? 'Proyecto' : 'Equipo';
   thead.innerHTML =
-    `<th class="col-name">Equipo</th>` +
+    `<th class="col-name">${firstLabel}</th>` +
     weeks.map(w=>`<th class="col-week"><span class="wk-date">${fmtShort(w)}</span><span class="wk-num">S${weekNumber(w)}</span></th>`).join('') +
     `<th class="col-rowtotal">Total</th>`;
 }
 
 function renderGrid(){
+  if(viewMode === 'project') renderGridByProject();
+  else renderGridByPerson();
+}
+
+function renderGridByPerson(){
   const weeks = visibleWeeks();
   const body = document.getElementById('grid-body');
 
@@ -846,6 +903,85 @@ function renderGrid(){
   body.innerHTML = html;
 }
 
+/* ============================================================
+   RENDER: GRID POR PROYECTO (vista derivada, de solo lectura —
+   usa los mismos datos de asignaciones que la vista por persona)
+   ============================================================ */
+function renderGridByProject(){
+  const weeks = visibleWeeks();
+  const body = document.getElementById('grid-body');
+
+  if(!state.projects.length){
+    body.innerHTML = `<tr><td colspan="${weeks.length+2}"><div class="emptystate"><div class="ic">◇</div>Aún no hay proyectos. Usa <b>+ Proyecto</b> para empezar.</div></td></tr>`;
+    return;
+  }
+
+  let html = '';
+
+  state.projects.forEach(proj=>{
+    const isOpen = openProjects.has(proj.id);
+    const assigns = assignmentsForProject(proj.id);
+
+    // fila resumen proyecto
+    html += `<tr class="person-row" data-project="${proj.id}">
+      <td class="col-name">
+        <div class="person-head">
+          <button class="chevron ${isOpen?'':'collapsed'}" data-toggle-project="${proj.id}" title="Expandir / contraer">▾</button>
+          <span class="proj-swatch" style="background:${proj.color};flex-shrink:0"></span>
+          <div style="min-width:0;flex:1">
+            <div class="person-name" title="${escapeHtml(proj.client)} — ${escapeHtml(proj.name)}">${escapeHtml(proj.client)} · ${escapeHtml(proj.name)}</div>
+            <div class="person-cap">${assigns.length} persona${assigns.length!==1?'s':''} asignada${assigns.length!==1?'s':''}</div>
+          </div>
+        </div>
+      </td>`;
+    weeks.forEach(w=>{
+      const tot = projectTotalForWeek(proj.id, w);
+      html += `<td class="col-week">
+        <div class="load-cell">
+          <span class="pct-lbl num">${fmtHrs(tot)}h</span>
+        </div>
+      </td>`;
+    });
+    const rowTotal = projectTotalAll(proj.id);
+    html += `<td class="col-rowtotal">${fmtHrs(rowTotal)}h</td></tr>`;
+
+    if(!isOpen) return;
+
+    // filas de personas asignadas a este proyecto (solo lectura)
+    assigns.forEach(a=>{
+      const per = personOf(a.personId);
+      if(!per) return;
+      html += `<tr class="proj-row">
+        <td class="col-name">
+          <div class="proj-name">
+            <span class="proj-label" title="${escapeHtml(per.name)}">${escapeHtml(per.name)} <span class="proj-client">· ${escapeHtml(per.area||'—')}</span></span>
+          </div>
+        </td>`;
+      weeks.forEach(w=>{
+        const val = getHours(a, w);
+        html += `<td class="col-week">
+          <div class="load-cell">
+            <span class="pct-lbl num" style="font-weight:500">${val ? fmtHrs(val)+'h' : '—'}</span>
+          </div>
+        </td>`;
+      });
+      const rt = weeks.reduce((s,w)=>s+getHours(a,w),0);
+      html += `<td class="col-rowtotal">${fmtHrs(rt)}h</td></tr>`;
+    });
+  });
+
+  // fila total proyectos
+  html += `<tr class="total-row"><td class="col-name">Total proyectos</td>`;
+  weeks.forEach(w=>{
+    const tot = state.projects.reduce((s,pr)=>s+projectTotalForWeek(pr.id,w),0);
+    html += `<td class="col-week"><div class="load-cell"><span class="pct-lbl num">${fmtHrs(tot)}h</span></div></td>`;
+  });
+  const grand = state.projects.reduce((s,pr)=>s+projectTotalAll(pr.id),0);
+  html += `<td class="col-rowtotal">${fmtHrs(grand)}h</td></tr>`;
+
+  body.innerHTML = html;
+}
+
 function renderAll(){
   document.getElementById('lbl-range').textContent = (function(){
     const weeks = visibleWeeks();
@@ -924,6 +1060,13 @@ document.getElementById('grid-body').addEventListener('click', e=>{
   if(chevron){
     const id = chevron.dataset.toggle;
     if(openPersons.has(id)) openPersons.delete(id); else openPersons.add(id);
+    renderGrid();
+    return;
+  }
+  const chevronProj = e.target.closest('[data-toggle-project]');
+  if(chevronProj){
+    const id = chevronProj.dataset.toggleProject;
+    if(openProjects.has(id)) openProjects.delete(id); else openProjects.add(id);
     renderGrid();
     return;
   }
@@ -1127,37 +1270,168 @@ document.getElementById('btn-nextweek').addEventListener('click', ()=>{
 });
 document.getElementById('btn-collapse-all').addEventListener('click', ()=>{
   openPersons.clear();
+  openProjects.clear();
   renderGrid();
 });
 document.getElementById('btn-demo').addEventListener('click', ()=>{
   if(!confirm('Esto reemplaza los datos actuales por un ejemplo de referencia. ¿Continuar?')) return;
   state = demoState();
   openPersons = new Set(state.people.slice(0,2).map(p=>p.id));
+  openProjects = new Set();
   renderAll();
   toast('Datos de ejemplo cargados');
 });
 
 /* ============================================================
+   PESTAÑAS DE VISTA: POR PERSONA / POR PROYECTO
+   ============================================================ */
+document.getElementById('viewtabs').addEventListener('click', e=>{
+  const btn = e.target.closest('[data-view]');
+  if(!btn) return;
+  viewMode = btn.dataset.view;
+  document.querySelectorAll('.viewtab').forEach(t=>t.classList.toggle('active', t===btn));
+  renderHead();
+  renderGrid();
+});
+
+/* ============================================================
    EXPORTAR / IMPORTAR
    ============================================================ */
-let _downloadsNS = null;
-(async ()=>{ try{ _downloadsNS = await window.claude.use('downloads'); }catch(e){ _downloadsNS = null; } })();
+function downloadBlob(filename, blob){
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url; a.download = filename;
+  document.body.appendChild(a); a.click(); a.remove();
+  setTimeout(()=>URL.revokeObjectURL(url), 4000);
+}
+function stamp(){ return isoKey(new Date()); }
 
-document.getElementById('btn-export').addEventListener('click', async ()=>{
-  const json = JSON.stringify(state,null,2);
-  const filename = 'planificador_carga_' + isoKey(new Date()) + '.json';
-  if(!_downloadsNS){
-    try{ _downloadsNS = await window.claude.use('downloads'); }catch(e){ _downloadsNS = null; }
-  }
-  if(!_downloadsNS){ toast('La descarga no está disponible en esta vista'); return; }
+/* Menú desplegable del botón Exportar */
+const exportMenuEl = document.getElementById('export-menu');
+document.getElementById('btn-export').addEventListener('click', e=>{
+  e.stopPropagation();
+  exportMenuEl.classList.toggle('open');
+});
+document.addEventListener('click', e=>{
+  if(exportMenuEl.classList.contains('open') && !e.target.closest('.export-wrap')) exportMenuEl.classList.remove('open');
+});
+function closeExportMenu(){ exportMenuEl.classList.remove('open'); }
+
+/* Captura la ventana completa (incluida la grilla aunque tenga scroll
+   horizontal) a un canvas, para usarla en Imagen y PDF. */
+async function captureShellCanvas(){
+  const scrollEl = document.querySelector('.gridscroll');
+  const prevOverflow = scrollEl.style.overflowX;
+  const prevWidth = scrollEl.style.width;
+  scrollEl.style.overflowX = 'visible';
+  scrollEl.style.width = scrollEl.scrollWidth + 'px';
   try{
-    await _downloadsNS.save({filename, data: json});
-    toast('Respaldo descargado');
+    return await html2canvas(document.querySelector('.shell'), {
+      backgroundColor: getComputedStyle(document.body).backgroundColor,
+      scale: 2,
+      useCORS: true
+    });
+  }finally{
+    scrollEl.style.overflowX = prevOverflow;
+    scrollEl.style.width = prevWidth;
+  }
+}
+
+/* ---- Excel (.xlsx): carga por persona + tiempos por proyecto ---- */
+document.getElementById('exp-excel').addEventListener('click', ()=>{
+  closeExportMenu();
+  try{
+    const weeks = visibleWeeks();
+    const weekHeaders = weeks.map(w=>fmtShort(w)+' (S'+weekNumber(w)+')');
+    const wb = XLSX.utils.book_new();
+
+    const aoaPersona = [['Persona','Área','Capacidad (h/sem)','Proyecto', ...weekHeaders, 'Total']];
+    state.people.forEach(p=>{
+      const assigns = assignmentsForPerson(p.id);
+      if(!assigns.length){
+        aoaPersona.push([p.name, p.area||'', +p.capacity||0, '(sin proyectos asignados)', ...weeks.map(()=>0), 0]);
+      }else{
+        assigns.forEach(a=>{
+          const proj = projectOf(a.projectId);
+          const vals = weeks.map(w=>getHours(a,w));
+          const tot = vals.reduce((s,v)=>s+v,0);
+          aoaPersona.push([p.name, p.area||'', +p.capacity||0, proj?(proj.client+' · '+proj.name):'(proyecto eliminado)', ...vals, tot]);
+        });
+      }
+    });
+    const wsPersona = XLSX.utils.aoa_to_sheet(aoaPersona);
+    XLSX.utils.book_append_sheet(wb, wsPersona, 'Carga por persona');
+
+    const aoaProyecto = [['Cliente','Proyecto','Persona','Área', ...weekHeaders, 'Total']];
+    state.projects.forEach(pr=>{
+      const assigns = assignmentsForProject(pr.id);
+      if(!assigns.length){
+        aoaProyecto.push([pr.client, pr.name, '(sin personas asignadas)', '', ...weeks.map(()=>0), 0]);
+      }else{
+        assigns.forEach(a=>{
+          const per = personOf(a.personId);
+          const vals = weeks.map(w=>getHours(a,w));
+          const tot = vals.reduce((s,v)=>s+v,0);
+          aoaProyecto.push([pr.client, pr.name, per?per.name:'(persona eliminada)', per?(per.area||''):'', ...vals, tot]);
+        });
+      }
+    });
+    const wsProyecto = XLSX.utils.aoa_to_sheet(aoaProyecto);
+    XLSX.utils.book_append_sheet(wb, wsProyecto, 'Tiempos por proyecto');
+
+    const buf = XLSX.write(wb, {bookType:'xlsx', type:'array'});
+    downloadBlob('planificador_carga_'+stamp()+'.xlsx', new Blob([buf], {type:'application/octet-stream'}));
+    toast('Excel descargado');
   }catch(err){
-    if(err && err.code === 'declined'){ /* el usuario canceló, sin mensaje */ }
-    else{ toast('No se pudo descargar el respaldo'); }
+    console.error('Excel export error:', err);
+    toast('No se pudo generar el Excel');
   }
 });
+
+/* ---- Imagen (.png) de toda la ventana ---- */
+document.getElementById('exp-image').addEventListener('click', async ()=>{
+  closeExportMenu();
+  toast('Generando imagen…');
+  try{
+    const canvas = await captureShellCanvas();
+    canvas.toBlob(blob=>{
+      if(!blob){ toast('No se pudo generar la imagen'); return; }
+      downloadBlob('planificador_carga_'+stamp()+'.png', blob);
+      toast('Imagen descargada');
+    }, 'image/png');
+  }catch(err){
+    console.error('Image export error:', err);
+    toast('No se pudo generar la imagen');
+  }
+});
+
+/* ---- PDF (.pdf) de toda la ventana ---- */
+document.getElementById('exp-pdf').addEventListener('click', async ()=>{
+  closeExportMenu();
+  toast('Generando PDF…');
+  try{
+    const canvas = await captureShellCanvas();
+    const imgData = canvas.toDataURL('image/png');
+    const { jsPDF } = window.jspdf;
+    const orientation = canvas.width >= canvas.height ? 'landscape' : 'portrait';
+    const pdf = new jsPDF({orientation, unit:'px', format:[canvas.width, canvas.height]});
+    pdf.addImage(imgData, 'PNG', 0, 0, canvas.width, canvas.height);
+    pdf.save('planificador_carga_'+stamp()+'.pdf');
+    toast('PDF descargado');
+  }catch(err){
+    console.error('PDF export error:', err);
+    toast('No se pudo generar el PDF');
+  }
+});
+
+/* ---- Respaldo de datos (.json) ---- */
+document.getElementById('exp-json').addEventListener('click', ()=>{
+  closeExportMenu();
+  const json = JSON.stringify(state,null,2);
+  downloadBlob('planificador_carga_'+stamp()+'.json', new Blob([json], {type:'application/json'}));
+  toast('Respaldo descargado');
+});
+
 document.getElementById('btn-import').addEventListener('click', ()=> document.getElementById('file-import').click());
 document.getElementById('file-import').addEventListener('change', e=>{
   const file = e.target.files[0];
