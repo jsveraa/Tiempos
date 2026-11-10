@@ -715,8 +715,12 @@ function assignmentsForPerson(personId){
 function personTotalForWeek(personId, weekDate){
   return assignmentsForPerson(personId).reduce((s,a)=> s + getHours(a, weekDate), 0);
 }
+/* Total histórico de una asignación: suma TODAS las semanas registradas (no solo la ventana visible) */
+function assignmentTotalAll(a){
+  return Object.values(a.hours||{}).reduce((s,v)=> s + (+v||0), 0);
+}
 function personTotalAll(personId){
-  return visibleWeeks().reduce((s,w)=> s + personTotalForWeek(personId, w), 0);
+  return assignmentsForPerson(personId).reduce((s,a)=> s + assignmentTotalAll(a), 0);
 }
 function projectOf(id){ return state.projects.find(p=>p.id===id); }
 function personOf(id){ return state.people.find(p=>p.id===id); }
@@ -728,7 +732,7 @@ function projectTotalForWeek(projectId, weekDate){
   return assignmentsForProject(projectId).reduce((s,a)=> s + getHours(a, weekDate), 0);
 }
 function projectTotalAll(projectId){
-  return visibleWeeks().reduce((s,w)=> s + projectTotalForWeek(projectId, w), 0);
+  return assignmentsForProject(projectId).reduce((s,a)=> s + assignmentTotalAll(a), 0);
 }
 
 function loadClass(pct){
@@ -800,7 +804,7 @@ function renderHead(){
   thead.innerHTML =
     `<th class="col-name">${firstLabel}</th>` +
     weeks.map(w=>`<th class="col-week"><span class="wk-date">${fmtShort(w)}</span><span class="wk-num">S${weekNumber(w)}</span></th>`).join('') +
-    `<th class="col-rowtotal">Total</th>`;
+    `<th class="col-rowtotal" title="Suma de todas las semanas registradas, incluidas las fuera de la ventana visible">Total</th>`;
 }
 
 function renderGrid(){
@@ -881,7 +885,7 @@ function renderGridByPerson(){
           </div>
         </td>`;
       });
-      const rt = weeks.reduce((s,w)=>s+getHours(a,w),0);
+      const rt = assignmentTotalAll(a);
       html += `<td class="col-rowtotal">${fmtHrs(rt)}h</td></tr>`;
     });
 
@@ -965,7 +969,7 @@ function renderGridByProject(){
           </div>
         </td>`;
       });
-      const rt = weeks.reduce((s,w)=>s+getHours(a,w),0);
+      const rt = assignmentTotalAll(a);
       html += `<td class="col-rowtotal">${fmtHrs(rt)}h</td></tr>`;
     });
   });
@@ -1037,7 +1041,7 @@ function refreshDerivedOnly(){
     const a = state.assignments.find(x=>x.id===aid);
     if(!a) return;
     const rt = row.querySelector('td.col-rowtotal');
-    if(rt) rt.textContent = fmtHrs(weeks.reduce((s,w)=>s+getHours(a,w),0))+'h';
+    if(rt) rt.textContent = fmtHrs(assignmentTotalAll(a))+'h';
   });
   const totalRow = document.querySelector('tr.total-row');
   if(totalRow){
@@ -1354,7 +1358,7 @@ document.getElementById('exp-excel').addEventListener('click', ()=>{
         assigns.forEach(a=>{
           const proj = projectOf(a.projectId);
           const vals = weeks.map(w=>getHours(a,w));
-          const tot = vals.reduce((s,v)=>s+v,0);
+          const tot = assignmentTotalAll(a);
           aoaPersona.push([p.name, p.area||'', +p.capacity||0, proj?(proj.client+' · '+proj.name):'(proyecto eliminado)', ...vals, tot]);
         });
       }
@@ -1371,7 +1375,7 @@ document.getElementById('exp-excel').addEventListener('click', ()=>{
         assigns.forEach(a=>{
           const per = personOf(a.personId);
           const vals = weeks.map(w=>getHours(a,w));
-          const tot = vals.reduce((s,v)=>s+v,0);
+          const tot = assignmentTotalAll(a);
           aoaProyecto.push([pr.client, pr.name, per?per.name:'(persona eliminada)', per?(per.area||''):'', ...vals, tot]);
         });
       }
